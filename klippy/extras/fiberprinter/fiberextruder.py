@@ -4,13 +4,127 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
+from klippy.kinematics.extruder import ExtruderStepper
 import stepper, chelper
 
-class ExtruderStepper:
+import math
+from enum import IntEnum
+
+class FiberMoveType(IntEnum):
+    OnlyKinematic = 0
+    Extrude = 1
+    ExtrudeFiber = 2
+    ExtrudeBoth = 3
+
+# Class to track each move request
+class FiberMove:
+    def __init__(self, toolhead, start_pos, end_pos, speed):
+        self.toolhead = toolhead
+        self.start_pos = tuple(start_pos)
+        self.end_pos = tuple(end_pos)
+        self.accel = toolhead.max_accel
+        self.junction_deviation = toolhead.junction_deviation
+        self.timing_callbacks = []
+        velocity = min(speed, toolhead.max_velocity)
+        self.is_kinematic_move = True
+        self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3, 4)]
+        self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+        
+        if move_d < .000000001:
+            # Extrude only move
+            self.end_pos = (start_pos[0], start_pos[1], start_pos[2],
+                            end_pos[3], end_pos[4])
+            
+            axes_d[0] = axes_d[1] = axes_d[2] = 0.
+            
+            self.move_d = move_d = abs(axes_d[3])
+            inv_move_d = 0.
+            if move_d:
+                inv_move_d = 1. / move_d
+            self.accel = 99999999.9
+            velocity = speed
+            
+            # if abs(axes_d[3]) < .000000001:
+        else:
+            inv_move_d = 1. / move_d
+            
+        self.axes_r = [d * inv_move_d for d in axes_d]
+        self.min_move_t = move_d / velocity
+        # Junction speeds are tracked in velocity squared.  The
+        # delta_v2 is the maximum amount of this squared-velocity that
+        # can change in this move.
+        self.max_start_v2 = 0.
+        self.max_cruise_v2 = velocity**2
+        self.delta_v2 = 2.0 * move_d * self.accel
+        self.max_smoothed_v2 = 0.
+        self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
+        self.next_junction_v2 = 999999999.9
+    def limit_speed(self, speed, accel):
+        speed2 = speed**2
+        if speed2 < self.max_cruise_v2:
+            self.max_cruise_v2 = speed2
+            self.min_move_t = self.move_d / speed
+        self.accel = min(self.accel, accel)
+        self.delta_v2 = 2.0 * self.move_d * self.accel
+        self.smooth_delta_v2 = min(self.smooth_delta_v2, self.delta_v2)
+    def limit_next_junction_speed(self, speed):
+        self.next_junction_v2 = min(self.next_junction_v2, speed**2)
+    def move_error(self, msg="Move out of range"):
+        ep = self.end_pos
+        m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
+        return self.toolhead.printer.command_error(m)
+    def calc_junction(self, prev_move):
+        if not self.is_kinematic_move or not prev_move.is_kinematic_move:
+            return
+        # Allow extruder to calculate its maximum junction
+        extruder_v2 = self.toolhead.extruder.calc_junction(prev_move, self)
+        max_start_v2 = min(extruder_v2, self.max_cruise_v2,
+                           prev_move.max_cruise_v2, prev_move.next_junction_v2,
+                           prev_move.max_start_v2 + prev_move.delta_v2)
+        # Find max velocity using "approximated centripetal velocity"
+        axes_r = self.axes_r
+        prev_axes_r = prev_move.axes_r
+        junction_cos_theta = -(axes_r[0] * prev_axes_r[0]
+                               + axes_r[1] * prev_axes_r[1]
+                               + axes_r[2] * prev_axes_r[2])
+        sin_theta_d2 = math.sqrt(max(0.5*(1.0-junction_cos_theta), 0.))
+        cos_theta_d2 = math.sqrt(max(0.5*(1.0+junction_cos_theta), 0.))
+        one_minus_sin_theta_d2 = 1. - sin_theta_d2
+        if one_minus_sin_theta_d2 > 0. and cos_theta_d2 > 0.:
+            R_jd = sin_theta_d2 / one_minus_sin_theta_d2
+            move_jd_v2 = R_jd * self.junction_deviation * self.accel
+            pmove_jd_v2 = R_jd * prev_move.junction_deviation * prev_move.accel
+            # Approximated circle must contact moves no further than mid-move
+            #   centripetal_v2 = .5 * self.move_d * self.accel * tan_theta_d2
+            quarter_tan_theta_d2 = .25 * sin_theta_d2 / cos_theta_d2
+            move_centripetal_v2 = self.delta_v2 * quarter_tan_theta_d2
+            pmove_centripetal_v2 = prev_move.delta_v2 * quarter_tan_theta_d2
+            max_start_v2 = min(max_start_v2, move_jd_v2, pmove_jd_v2,
+                               move_centripetal_v2, pmove_centripetal_v2)
+        # Apply limits
+        self.max_start_v2 = max_start_v2
+        self.max_smoothed_v2 = min(
+            max_start_v2, prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2)
+    def set_junction(self, start_v2, cruise_v2, end_v2):
+        # Determine accel, cruise, and decel portions of the move distance
+        half_inv_accel = .5 / self.accel
+        accel_d = (cruise_v2 - start_v2) * half_inv_accel
+        decel_d = (cruise_v2 - end_v2) * half_inv_accel
+        cruise_d = self.move_d - accel_d - decel_d
+        # Determine move velocities
+        self.start_v = start_v = math.sqrt(start_v2)
+        self.cruise_v = cruise_v = math.sqrt(cruise_v2)
+        self.end_v = end_v = math.sqrt(end_v2)
+        # Determine time spent in each portion of move (time is the
+        # distance divided by average velocity)
+        self.accel_t = accel_d / ((start_v + cruise_v) * 0.5)
+        self.cruise_t = cruise_d / cruise_v
+        self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
+
+class FiberExtruderStepper:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
-        self.pressure_advance = self.pressure_advance_smooth_time = 0.
         self.config_pa = config.getfloat('pressure_advance', 0., minval=0.)
         self.config_smooth_time = config.getfloat(
                 'pressure_advance_smooth_time', 0.040, above=0., maxval=.200)
@@ -25,16 +139,10 @@ class ExtruderStepper:
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_connect)
         gcode = self.printer.lookup_object('gcode')
-        if self.name == 'extruder':
-            gcode.register_mux_command("SET_PRESSURE_ADVANCE", "EXTRUDER", None,
-                                       self.cmd_default_SET_PRESSURE_ADVANCE,
-                                       desc=self.cmd_SET_PRESSURE_ADVANCE_help)
-        gcode.register_mux_command("SET_PRESSURE_ADVANCE", "EXTRUDER",
-                                   self.name, self.cmd_SET_PRESSURE_ADVANCE,
-                                   desc=self.cmd_SET_PRESSURE_ADVANCE_help)
-        gcode.register_mux_command("SET_EXTRUDER_ROTATION_DISTANCE", "EXTRUDER",
-                                   self.name, self.cmd_SET_E_ROTATION_DISTANCE,
-                                   desc=self.cmd_SET_E_ROTATION_DISTANCE_help)
+
+        gcode.register_mux_command("SET_FIBER_EXTRUDER_ROTATION_DISTANCE", "EXTRUDER",
+                                   self.name, self.cmd_SET_D_ROTATION_DISTANCE,
+                                   desc=self.cmd_SET_D_ROTATION_DISTANCE_help)
         gcode.register_mux_command("SYNC_EXTRUDER_MOTION", "EXTRUDER",
                                    self.name, self.cmd_SYNC_EXTRUDER_MOTION,
                                    desc=self.cmd_SYNC_EXTRUDER_MOTION_help)
@@ -49,6 +157,7 @@ class ExtruderStepper:
     def find_past_position(self, print_time):
         mcu_pos = self.stepper.get_past_mcu_position(print_time)
         return self.stepper.mcu_to_commanded_position(mcu_pos)
+    
     def sync_to_extruder(self, extruder_name):
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.flush_step_generation()
@@ -57,53 +166,14 @@ class ExtruderStepper:
             self.motion_queue = None
             return
         extruder = self.printer.lookup_object(extruder_name, None)
-        if extruder is None or not isinstance(extruder, PrinterExtruder):
+        if extruder is None or not isinstance(extruder, FiberExtruder):
             raise self.printer.command_error("'%s' is not a valid extruder."
                                              % (extruder_name,))
         self.stepper.set_position([extruder.last_position, 0., 0.])
         self.stepper.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
-    def _set_pressure_advance(self, pressure_advance, smooth_time):
-        old_smooth_time = self.pressure_advance_smooth_time
-        if not self.pressure_advance:
-            old_smooth_time = 0.
-        new_smooth_time = smooth_time
-        if not pressure_advance:
-            new_smooth_time = 0.
-        toolhead = self.printer.lookup_object("toolhead")
-        if new_smooth_time != old_smooth_time:
-            toolhead.note_step_generation_scan_time(
-                    new_smooth_time * .5, old_delay=old_smooth_time * .5)
-        ffi_main, ffi_lib = chelper.get_ffi()
-        espa = ffi_lib.extruder_set_pressure_advance
-        toolhead.register_lookahead_callback(
-            lambda print_time: espa(self.sk_extruder, print_time,
-                                    pressure_advance, new_smooth_time))
-        self.pressure_advance = pressure_advance
-        self.pressure_advance_smooth_time = smooth_time
-    cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
-    def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
-        extruder = self.printer.lookup_object('toolhead').get_extruder()
-        if extruder.extruder_stepper is None:
-            raise gcmd.error("Active extruder does not have a stepper")
-        strapq = extruder.extruder_stepper.stepper.get_trapq()
-        if strapq is not extruder.get_trapq():
-            raise gcmd.error("Unable to infer active extruder stepper")
-        extruder.extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
-    def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
-        pressure_advance = gcmd.get_float('ADVANCE', self.pressure_advance,
-                                          minval=0.)
-        smooth_time = gcmd.get_float('SMOOTH_TIME',
-                                     self.pressure_advance_smooth_time,
-                                     minval=0., maxval=.200)
-        self._set_pressure_advance(pressure_advance, smooth_time)
-        msg = ("pressure_advance: %.6f\n"
-               "pressure_advance_smooth_time: %.6f"
-               % (pressure_advance, smooth_time))
-        self.printer.set_rollover_info(self.name, "%s: %s" % (self.name, msg))
-        gcmd.respond_info(msg, log=False)
-    cmd_SET_E_ROTATION_DISTANCE_help = "Set extruder rotation distance"
-    def cmd_SET_E_ROTATION_DISTANCE(self, gcmd):
+    cmd_SET_D_ROTATION_DISTANCE_help = "Set extruder rotation distance"
+    def cmd_SET_D_ROTATION_DISTANCE(self, gcmd):
         rotation_dist = gcmd.get_float('DISTANCE', None)
         if rotation_dist is not None:
             if not rotation_dist:
@@ -132,50 +202,68 @@ class ExtruderStepper:
                           % (self.name, ename))
 
 # Tracking for hotend heater, extrusion motion queue, and extruder stepper
-class PrinterExtruder:
-    def __init__(self, config, extruder_num):
+class FiberExtruder:
+    def __init__(self, config, extruder_section, extruder_num):
         self.printer = config.get_printer()
-        self.name = config.get_name()
+        self.name = extruder_section.get_name()
         self.last_position = 0.
+        self.fiber_last_position = 0.
+        
         # Setup hotend heater
         pheaters = self.printer.load_object(config, 'heaters')
         gcode_id = 'T%d' % (extruder_num,)
         self.heater = pheaters.setup_heater(config, gcode_id)
         # Setup kinematic checks
-        self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
-        filament_diameter = config.getfloat(
+        self.nozzle_diameter = extruder_section.getfloat('nozzle_diameter', above=0.)
+        filament_diameter = extruder_section.getfloat(
             'filament_diameter', minval=self.nozzle_diameter)
         self.filament_area = math.pi * (filament_diameter * .5)**2
         def_max_cross_section = 4. * self.nozzle_diameter**2
         def_max_extrude_ratio = def_max_cross_section / self.filament_area
-        max_cross_section = config.getfloat(
+        max_cross_section = extruder_section.getfloat(
             'max_extrude_cross_section', def_max_cross_section, above=0.)
         self.max_extrude_ratio = max_cross_section / self.filament_area
         logging.info("Extruder max_extrude_ratio=%.6f", self.max_extrude_ratio)
         toolhead = self.printer.lookup_object('toolhead')
         max_velocity, max_accel = toolhead.get_max_velocity()
-        self.max_e_velocity = config.getfloat(
+        self.max_e_velocity = extruder_section.getfloat(
             'max_extrude_only_velocity', max_velocity * def_max_extrude_ratio
             , above=0.)
-        self.max_e_accel = config.getfloat(
+        self.max_e_accel = extruder_section.getfloat(
             'max_extrude_only_accel', max_accel * def_max_extrude_ratio
             , above=0.)
-        self.max_e_dist = config.getfloat(
+        self.max_e_dist = extruder_section.getfloat(
             'max_extrude_only_distance', 50., minval=0.)
-        self.instant_corner_v = config.getfloat(
+        self.instant_corner_v = extruder_section.getfloat(
             'instantaneous_corner_velocity', 1., minval=0.)
+        
         # Setup extruder trapq (trapezoidal motion queue)
         ffi_main, ffi_lib = chelper.get_ffi()
-        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         self.trapq_append = ffi_lib.trapq_append
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        
+        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+        
         # Setup extruder stepper
         self.extruder_stepper = None
-        if (config.get('step_pin', None) is not None
-            or config.get('dir_pin', None) is not None
-            or config.get('rotation_distance', None) is not None):
+        if (extruder_section.get('step_pin', None) is not None
+            or extruder_section.get('dir_pin', None) is not None
+            or extruder_section.get('rotation_distance', None) is not None):
             self.extruder_stepper = ExtruderStepper(config)
             self.extruder_stepper.stepper.set_trapq(self.trapq)
+            
+            
+        # trapq for fiber extruder
+        self.fiber_trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+        
+        # Setup fiber extruder stepper
+        self.fiber_extruder_stepper = None
+        if (config.get('fiber_step_pin', None) is not None # step_pin for fiber extruder
+            or config.get('fiber_dir_pin', None) is not None
+            or config.get('fiber_rotation_distance', None) is not None):
+            self.fiber_extruder_stepper = FiberExtruderStepper(config)
+            self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
+            
         # Register commands
         gcode = self.printer.lookup_object('gcode')
         if self.name == 'extruder':
@@ -234,6 +322,7 @@ class PrinterExtruder:
             return (self.instant_corner_v / abs(diff_r))**2
         return move.max_cruise_v2
     def move(self, print_time, move):
+        # extruder move
         axis_r = move.axes_r[3]
         accel = move.accel * axis_r
         start_v = move.start_v * axis_r
@@ -248,6 +337,23 @@ class PrinterExtruder:
                           1., can_pressure_advance, 0.,
                           start_v, cruise_v, accel)
         self.last_position = move.end_pos[3]
+        
+        if move.isinstance(FiberMove):
+            # fiber move
+            fiber_axis_r = move.axes_r[4]
+            fiber_accel = move.accel * fiber_axis_r
+            fiber_start_v = move.start_v * fiber_axis_r
+            fiber_cruise_v = move.cruise_v * fiber_axis_r
+                
+            # Queue movement (x is extruder movement, y is pressure advance flag)
+            self.fiber_trapq_append(self.fiber_trapq, print_time,
+                                move.accel_t, move.cruise_t, move.decel_t,
+                                move.start_pos[4], 0., 0.,
+                                1., False, 0.,
+                                fiber_start_v, fiber_cruise_v, fiber_accel)
+            
+            self.fiber_last_position = move.end_pos[4]
+        
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.
@@ -272,14 +378,13 @@ class PrinterExtruder:
     def cmd_M109(self, gcmd):
         # Set Extruder Temperature and Wait
         self.cmd_M104(gcmd, wait=True)
-        
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
         if toolhead.get_extruder() is self:
             gcmd.respond_info("Extruder %s already active" % (self.name,))
             return
-        gcmd.respond_info("Activating extruder %s" % (self.name,))
+        gcmd.respond_info("Activating fiber extruder %s" % (self.name,))
         toolhead.flush_step_generation()
         toolhead.set_extruder(self, self.last_position)
         self.printer.send_event("extruder:activate_extruder")
@@ -303,14 +408,17 @@ class DummyExtruder:
     def get_trapq(self):
         raise self.printer.command_error("Extruder not configured")
 
-def add_printer_objects(config):
+def load_extruders(config):
     printer = config.get_printer()
-    
     for i in range(99):
-        section = 'extruder'
+        section = 'fiberprinter'
+        extruder_section = 'extruder'
         if i:
-            section = 'extruder%d' % (i,)
-        if not config.has_section(section):
+            section = 'fiberprinter%d' % (i,)
+            extruder_section = 'extruder%d' % (i,)
+        if not config.has_section(section) or not config.has_section(extruder_section):
             break
-        pe = PrinterExtruder(config.getsection(section), i)
-        printer.add_object(section, pe)
+        
+        printer.objects[extruder_section] = FiberExtruder(config.getsection(section), 
+                                                          config.getsection(extruder_section), 
+                                                          i)

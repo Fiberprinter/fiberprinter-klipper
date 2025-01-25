@@ -139,6 +139,7 @@ class MCU_trsync:
         mcu = self._mcu
         # Setup config
         mcu.add_config_cmd("config_trsync oid=%d" % (self._oid,))
+        
         mcu.add_config_cmd(
             "trsync_start oid=%d report_clock=0 report_ticks=0 expire_reason=0"
             % (self._oid,), on_restart=True)
