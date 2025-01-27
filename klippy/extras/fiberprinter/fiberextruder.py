@@ -9,8 +9,6 @@ import stepper, chelper
 
 import math
 
-from klippy.kinematics.extruder import DummyExtruder
-
 class FiberExtruderStepper:
     def __init__(self, config):
         self.printer = config.get_printer()

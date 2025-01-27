@@ -28,7 +28,7 @@ class Move:
             self.end_pos = (start_pos[0], start_pos[1], start_pos[2],
                             end_pos[3], end_pos[4])
             axes_d[0] = axes_d[1] = axes_d[2] = 0.
-            self.move_d = move_d = abs(axes_d[3])
+            self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[3:]]))
             inv_move_d = 0.
             if move_d:
                 inv_move_d = 1. / move_d
@@ -477,6 +477,7 @@ class ToolHead:
             return
         if move.is_kinematic_move:
             self.kin.check_move(move)
+            
         if move.axes_d[3] or move.axes_d[4]:
             self.extruder.check_move(move)
         
