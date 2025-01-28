@@ -83,6 +83,27 @@ class GCodeCommand:
                   above=None, below=None):
         return self.get(name, default, parser=float, minval=minval,
                         maxval=maxval, above=above, below=below)
+        
+        
+# GCode parameter handling
+# check_fn: function to validate the parameter
+# move_fn: function to do some action with the parameter
+class GCodeParameter:
+    def __init__(self, symbol, check_fn, move_fn, default=0.0):
+        self._symbol = symbol
+        self._default = default
+        
+        self._check_fn = check_fn
+        self._move_fn = move_fn
+        
+    def check_move(self, move):
+        self._check_fn(move)
+    
+    def move(self, move):
+        self._move_fn(move)
+    
+    def get_default(self):
+        return self.default
 
 # Parse and dispatch G-Code commands
 class GCodeDispatch:
@@ -104,6 +125,8 @@ class GCodeDispatch:
         self.mux_commands = {}
         self.gcode_help = {}
         self.status_commands = {}
+        self.params = {}
+        
         # Register commands needed before config file is loaded
         handlers = ['M110', 'M112', 'M115',
                     'RESTART', 'FIRMWARE_RESTART', 'ECHO', 'STATUS', 'HELP']
@@ -160,6 +183,17 @@ class GCodeDispatch:
                 "mux command %s %s %s already registered (%s)" % (
                     cmd, key, value, prev_values))
         prev_values[value] = func
+        
+    def register_param(self, param):
+        if not param.isinstance(GCodeParameter):
+            raise self.printer.config_error(
+                "Can't register '%s' as it is not a GCodeParameter" % (param,))
+        
+        self.params.append(param)
+    
+    def get_params(self):
+        return self.params
+    
     def get_command_help(self):
         return dict(self.gcode_help)
     def get_status(self, eventtime):
