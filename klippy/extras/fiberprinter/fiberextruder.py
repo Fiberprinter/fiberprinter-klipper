@@ -153,8 +153,6 @@ class FiberExtruder:
             self.fiber_extruder_stepper = FiberExtruderStepper(fiber_extruder_section)
             self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
         
-        self.printer.add_object('fiberextruder%d' % (extruder_num), self.fiber_extruder_stepper)
-        
         # Register commands
         gcode = self.printer.lookup_object('gcode')
         if self.name == 'fiberprinter':
@@ -286,10 +284,13 @@ def load_extruders(config):
     printer = config.get_printer()
     for i in range(99):
         section = 'fiberprinter'
+        section_extruder = 'fiberextruder'
         if i:
             section = 'fiberprinter%d' % (i,)
-        if not config.has_section(section):
+            section_extruder = 'fiberextruder%d' % (i,)
+        if not config.has_section(section) or not section_extruder.has_section():
             break
         
         pe = FiberExtruder(config.getsection(section), i)
         printer.add_object(section, pe)
+        printer.add_object(section_extruder, pe)
