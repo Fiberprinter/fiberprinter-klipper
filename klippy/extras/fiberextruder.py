@@ -140,6 +140,8 @@ class FiberExtruder:
         self.last_position = 0.
         self.extruder_num = extruder_num
         
+        self.cutter = CutterServo(config)
+        
         # Setup extruder trapq (trapezoidal motion queue)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.trapq_append = ffi_lib.trapq_append
