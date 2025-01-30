@@ -192,4 +192,13 @@ class FiberExtruder:
             self.fiber_last_position = move.end_pos[4]
 
 def load_config(config):
-    return FiberExtruder(config)
+    printer = config.get_printer()
+    
+    for i in range(99):
+        section = 'fiberextruder'
+        if i:
+            section = 'fiberextruder%d' % (i,)
+        if not config.has_section(section):
+            break
+        pe = FiberExtruder(config.getsection(section), i)
+        printer.add_object(section, pe)
