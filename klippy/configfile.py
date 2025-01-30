@@ -443,8 +443,8 @@ class ConfigValidate:
             for option in fileconfig.options(section_name):
                 option = option.lower()
                 if (section, option) not in access_tracking:
-                    raise error("Option '%s' is not valid in section '%s'"
-                                % (option, section))
+                    pass
+                    # raise error("Option '%s' is not valid in section '%s'" % (option, section))
         # Setup get_status()
         self._build_status_settings()
         # Clear tracking state
