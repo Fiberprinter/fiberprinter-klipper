@@ -152,7 +152,9 @@ class FiberExtruder:
             or fiber_extruder_section.get('rotation_distance', None) is not None):
             self.fiber_extruder_stepper = FiberExtruderStepper(fiber_extruder_section)
             self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
-            
+        
+        self.printer.add_object('fiberextruder%d' % (extruder_num), self.fiber_extruder_stepper)
+        
         # Register commands
         gcode = self.printer.lookup_object('gcode')
         if self.name == 'fiberprinter':
