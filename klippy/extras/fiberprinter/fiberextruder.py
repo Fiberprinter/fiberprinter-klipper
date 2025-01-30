@@ -139,22 +139,23 @@ class FiberExtruder:
             or config.get('rotation_distance', None) is not None):
             self.extruder_stepper = ExtruderStepper(config)
             self.extruder_stepper.stepper.set_trapq(self.trapq)
-            
-            
+        
         # trapq for fiber extruder
         self.fiber_trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         
+        fiber_extruder_section = config.getsection('fiberextruder%d' % (extruder_num))
+        
         # Setup fiber extruder stepper
         self.fiber_extruder_stepper = None
-        if (config.get('fiber_step_pin', None) is not None # step_pin for fiber extruder
-            or config.get('fiber_dir_pin', None) is not None
-            or config.get('fiber_rotation_distance', None) is not None):
-            self.fiber_extruder_stepper = FiberExtruderStepper(config)
+        if (fiber_extruder_section.get('step_pin', None) is not None # step_pin for fiber extruder
+            or fiber_extruder_section.get('dir_pin', None) is not None
+            or fiber_extruder_section.get('rotation_distance', None) is not None):
+            self.fiber_extruder_stepper = FiberExtruderStepper(fiber_extruder_section)
             self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
             
         # Register commands
         gcode = self.printer.lookup_object('gcode')
-        if self.name == 'extruder':
+        if self.name == 'fiberprinthead':
             toolhead.set_extruder(self, 0.)
             gcode.register_command("M104", self.cmd_M104)
             gcode.register_command("M109", self.cmd_M109)
@@ -282,9 +283,9 @@ class FiberExtruder:
 def load_extruders(config):
     printer = config.get_printer()
     for i in range(99):
-        section = 'fiberprinter'
+        section = 'fiberprinthead'
         if i:
-            section = 'fiberprinter%d' % (i,)
+            section = 'fiberprinthead%d' % (i,)
         if not config.has_section(section):
             break
         
