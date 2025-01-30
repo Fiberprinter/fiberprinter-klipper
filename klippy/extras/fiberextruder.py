@@ -191,15 +191,12 @@ class FiberExtruder:
 def load_extruders(config):
     printer = config.get_printer()
     for i in range(99):
-        section = 'fiberprinter'
-        section_extruder = 'fiberextruder'
+        section = 'fiberextruder'
         if i:
-            section = 'fiberprinter%d' % (i,)
-            section_extruder = 'fiberextruder%d' % (i,)
+            section = 'fiberextruder%d' % (i,)
             
-        if not config.has_section(section) or not config.has_section(section_extruder):
+        if not config.has_section(section):
             break
         
         pe = FiberExtruder(config.getsection(section), i)
         printer.add_object(section, pe)
-        printer.add_object(section_extruder, pe)
