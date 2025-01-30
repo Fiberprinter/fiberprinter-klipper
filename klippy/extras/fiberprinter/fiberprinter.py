@@ -5,7 +5,7 @@ class FiberPrinter:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
         self.toolhead = printer.lookup_object('toolhead')
-        self.cutter = CutterServo(config)
+        self.cutter = CutterServo(config.getsection('fiberprinter'))
         
         fiberextruder.load_extruders(config)
         

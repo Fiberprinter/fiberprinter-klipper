@@ -155,7 +155,7 @@ class FiberExtruder:
             
         # Register commands
         gcode = self.printer.lookup_object('gcode')
-        if self.name == 'fiberprinthead':
+        if self.name == 'fiberprinter':
             toolhead.set_extruder(self, 0.)
             gcode.register_command("M104", self.cmd_M104)
             gcode.register_command("M109", self.cmd_M109)
@@ -283,9 +283,9 @@ class FiberExtruder:
 def load_extruders(config):
     printer = config.get_printer()
     for i in range(99):
-        section = 'fiberprinthead'
+        section = 'fiberprinter'
         if i:
-            section = 'fiberprinthead%d' % (i,)
+            section = 'fiberprinter%d' % (i,)
         if not config.has_section(section):
             break
         
