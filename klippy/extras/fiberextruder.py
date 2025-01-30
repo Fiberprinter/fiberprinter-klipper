@@ -4,6 +4,8 @@ import chelper
 
 import stepper, chelper
 
+from toolhead import Move
+
 SERVO_SIGNAL_PERIOD = 0.020
 PIN_MIN_TIME = 0.100
 
@@ -66,7 +68,6 @@ class CutterServo:
         return angle
 
     cmd_SET_SERVO_help = "Set servo angle"
-    
     def cmd_SET_SERVO(self, gcmd):
         print_time = self.printer.lookup_object('toolhead').get_last_move_time()
         angle = gcmd.get_float('ANGLE', None)
@@ -141,25 +142,58 @@ class FiberExtruder:
         self.extruder_num = extruder_num
         
         self.cutter = CutterServo(config)
+        self.enabled = False
         
+        self.e_factor = config.getfloat('e_factor')
         
         # Setup extruder trapq (trapezoidal motion queue)
-        # ffi_main, ffi_lib = chelper.get_ffi()
-        #self.trapq_append = ffi_lib.trapq_append
-        #self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self.trapq_append = ffi_lib.trapq_append
+        self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         
-        #self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         
         # Setup extruder stepper
-        #self.extruder_stepper = None
-        #if (config.get('step_pin', None) is not None
-        #    or config.get('dir_pin', None) is not None
-        #    or config.get('rotation_distance', None) is not None):
-        #    self.extruder_stepper = ExtruderStepper(config)
-        #    self.extruder_stepper.stepper.set_trapq(self.trapq)
-            
+        self.extruder_stepper = None
+        if (config.get('step_pin', None) is not None
+            or config.get('dir_pin', None) is not None
+            or config.get('rotation_distance', None) is not None):
+            self.extruder_stepper = ExtruderStepper(config)
+            self.extruder_stepper.stepper.set_trapq(self.trapq)
+           
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_connect)
+        
+        #Register Commands
+        gcode = self.printer.lookup_object('gcode')
+
+        gcode.register_command("EXTRUDE_FIBER", self.cmd_EXTRUDE_FIBER)
+        gcode.register_command("DISABLE_FIBER", self.cmd_DISABLE_FIBER_EXTRUDER)
+        gcode.register_command("ENABLE_FIBER", self.cmd_ENABLE_FIBER_EXTRUDER)
+    
+    def cmd_EXTRUDE_FIBER(self, gcmd):
+        print_time = self.printer.lookup_object('toolhead').get_last_move_time()
+        fiber_length = gcmd.get_float('LENGTH', None)
+        
+        gcmd.respond_info("Extruding fiber")
+        
+        if fiber_length is not None:
+            if not fiber_length:
+                raise gcmd.error("Fiber length can not be zero")
+            
+            # self.move(print_time, )
+        else:
+            pass
+        
+    def cmd_DISABLE_FIBER_EXTRUDER(self, gcmd):
+        self.enabled = False
+        
+        gcmd.respond_info("Fiber disabled")
+    
+    def cmd_ENABLE_FIBER_EXTRUDER(self, gcmd):
+        self.enabled = True
+        
+        gcmd.respond_info("Fiber enabled")
         
     def _handle_connect(self):
         if self.extruder_num == 0:
@@ -177,26 +211,49 @@ class FiberExtruder:
     def update_move_time(self, flush_time, clear_history_time):
         # self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
         pass
-
+        
     def check_move(self, move):
         pass
 
     def move(self, print_time, move):
-        # fiber extruder move
-        if move.axes_d[4]:
-            axis_r = move.axes_r[4]
-            accel = move.accel * axis_r
-            start_v = move.start_v * axis_r
-            cruise_v = move.cruise_v * axis_r
+        # calc move
+        
+        if self.enabled:
+            if move.is_kinematic_move:
+                d = move.move_d
+                axis_r = move.axes_r[3]
+                accel = move.accel
+                start_v = move.start_v
+                cruise_v = move.cruise_v
+                    
+                # Queue movement (x is extruder movement, y is pressure advance flag)
+                self.trapq_append(self.trapq, print_time,
+                                    move.accel_t, move.cruise_t, move.decel_t,
+                                    d, 0., 0.,
+                                    1., False, 0.,
+                                    start_v, cruise_v, accel)
                 
-            # Queue movement (x is extruder movement, y is pressure advance flag)
-            # self.fiber_trapq_append(self.trapq, print_time,
-            #                    move.accel_t, move.cruise_t, move.decel_t,
-            #                    move.start_pos[4], 0., 0.,
-            #                    1., False, 0.,
-            #                    start_v, cruise_v, accel)
-            
-            self.fiber_last_position = move.end_pos[4]
+                self.last_position = d           
+            else:
+                d_fiber = move.axes_d[3] * self.e_factor
+                d = math.sqrt(move.axes_d[3]*move.axes_d[3] + d_fiber*d_fiber)
+                if d:
+                    inv_d = 1./d
+                    
+                    axis_r[3] = d * inv_d
+                    axis_r = d_fiber * inv_d
+                    accel = move.accel * axis_r
+                    start_v = move.start_v * axis_r
+                    cruise_v = move.cruise_v * axis_r
+                        
+                    # Queue movement (x is extruder movement, y is pressure advance flag)
+                    self.fiber_trapq_append(self.trapq, print_time,
+                                        move.accel_t, move.cruise_t, move.decel_t,
+                                        d_fiber, 0., 0.,
+                                        1., False, 0.,
+                                        start_v, cruise_v, accel)
+                    
+                    self.last_position = d_fiber
 
 def load_config(config):
     printer = config.get_printer()

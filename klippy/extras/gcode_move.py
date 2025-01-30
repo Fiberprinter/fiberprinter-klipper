@@ -39,16 +39,16 @@ class GCodeMove:
         self.Coord = gcode.Coord
         # G-Code coordinate manipulation
         self.absolute_coord = self.absolute_extrude = True
-        self.base_position = [0.0, 0.0, 0.0, 0.0, 0.0]
-        self.last_position = [0.0, 0.0, 0.0, 0.0, 0.0]
-        self.homing_position = [0.0, 0.0, 0.0, 0.0, 0.0]
+        self.base_position = [0.0, 0.0, 0.0, 0.0]
+        self.last_position = [0.0, 0.0, 0.0, 0.0]
+        self.homing_position = [0.0, 0.0, 0.0, 0.0]
         self.speed = 25.
         self.speed_factor = 1. / 60.
         self.extrude_factor = 1.
         # G-Code state
         self.saved_states = {}
         self.move_transform = self.move_with_transform = None
-        self.position_with_transform = (lambda: [0., 0., 0., 0., 0.])
+        self.position_with_transform = (lambda: [0., 0., 0., 0.])
     def _handle_ready(self):
         self.is_printer_ready = True
         if self.move_transform is None:
@@ -89,8 +89,6 @@ class GCodeMove:
     def _get_gcode_position(self):
         p = [lp - bp for lp, bp in zip(self.last_position, self.base_position)]
         p[3] /= self.extrude_factor
-        p[4] /= self.extrude_factor
-        
         return p
     def _get_gcode_speed(self):
         return self.speed / self.speed_factor
@@ -133,14 +131,6 @@ class GCodeMove:
                 else:
                     # value relative to base coordinate position
                     self.last_position[3] = v + self.base_position[3]
-                    
-            if 'D' in params:
-                v = float(params['D']) * self.extrude_factor
-                if not self.absolute_coord or not self.absolute_extrude:
-                    self.last_position[4] += v
-                else:
-                    self.last_position[4] = v * self.base_position[4]
-                
             if 'F' in params:
                 gcode_speed = float(params['F'])
                 if gcode_speed <= 0.:
