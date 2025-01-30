@@ -58,7 +58,11 @@ class FiberExtruder:
         # trapq for fiber extruder
         self.fiber_trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         
-        self.fiber_extruder_stepper = self.printer.lookup_object('fiberextruder_stepper%d' % (extruder_num))
+        if extruder_num == 0:
+            self.fiber_extruder_stepper = self.printer.lookup_object('fiberextruder_stepper')
+        else:
+            self.fiber_extruder_stepper = self.printer.lookup_object('fiberextruder_stepper%d' % (extruder_num))        
+    
         self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
         
         # Register commands
