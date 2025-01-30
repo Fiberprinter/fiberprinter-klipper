@@ -21,7 +21,7 @@ class CutterServo:
         self.cutting_angle = config.getfloat('cutting_angle', 20.0, minval=0., maxval=360.)
         # Setup mcu_servo pin
         ppins = self.printer.lookup_object('pins')
-        self.mcu_servo = ppins.setup_pin('pwm', config.get('pin'))
+        self.mcu_servo = ppins.setup_pin('pwm', config.get('cutting_pin'))
         self.mcu_servo.setup_max_duration(0.)
         self.mcu_servo.setup_cycle_time(SERVO_SIGNAL_PERIOD)
         self.mcu_servo.setup_start_value(self._get_pwm_from_angle(self.initial_angle), 0.)
