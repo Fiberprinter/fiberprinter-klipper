@@ -288,7 +288,8 @@ def load_extruders(config):
         if i:
             section = 'fiberprinter%d' % (i,)
             section_extruder = 'fiberextruder%d' % (i,)
-        if not config.has_section(section) or not section_extruder.has_section(section_extruder):
+            
+        if not config.has_section(section) or not config.has_section(section_extruder):
             break
         
         pe = FiberExtruder(config.getsection(section), i)
