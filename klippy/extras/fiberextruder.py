@@ -169,6 +169,9 @@ class FiberExtruder:
         extruder.register_update_move_time_callback(self.update_move_time)
         extruder.register_check_move_callback(self.check_move)
         extruder.register_move_callback(self.move)
+        
+        gcode = self.printer.lookup_object('gcode')
+        gcode.respond_info(f"Fiber Extruder {self.extruder_num} loaded")
     
     def update_move_time(self, flush_time, clear_history_time):
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
