@@ -6,5 +6,5 @@ class FiberPrinter:
         self.cutter = CutterServo(config.getsection('fiberprinter'))
         load_extruders(config)
         
-def load_config(config):
+def add_fiber_printer(config):
     return FiberPrinter(config)

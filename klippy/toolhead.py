@@ -295,8 +295,6 @@ class ToolHead:
                    "manual_probe", "tuning_tower"]
         for module_name in modules:
             self.printer.load_object(config, module_name)
-            
-        logging.info('Loading ToolHead!')
     # Print time and flush tracking
     def _advance_flush_time(self, flush_time):
         flush_time = max(flush_time, self.last_flush_time)
@@ -682,3 +680,4 @@ class ToolHead:
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))
     kinematics.extruder.add_printer_objects(config)
+    
