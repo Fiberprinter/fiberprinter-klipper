@@ -304,11 +304,7 @@ class DummyExtruder:
     def get_trapq(self):
         raise self.printer.command_error("Extruder not configured")
 
-import extras.fiberprinter as fiberprinter
-
 def add_printer_objects(config):
-    fiberprinter.add_fiber_printer(config)
-    
     printer = config.get_printer()
     
     for i in range(99):
