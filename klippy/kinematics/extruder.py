@@ -170,6 +170,10 @@ class PrinterExtruder:
         self.trapq_append = ffi_lib.trapq_append
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         
+        self.update_move_time_callbacks = []
+        self.check_move_callbacks = []
+        self.move_callbacks = []
+        
         # Setup extruder stepper
         self.extruder_stepper = None
         if (config.get('step_pin', None) is not None
@@ -188,6 +192,10 @@ class PrinterExtruder:
                                    desc=self.cmd_ACTIVATE_EXTRUDER_help)
     def update_move_time(self, flush_time, clear_history_time):
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
+        
+        for f in self.update_move_time_callbacks:
+            f(self.trapq, flush_time, clear_history_time)
+        
     def get_status(self, eventtime):
         sts = self.heater.get_status(eventtime)
         sts['can_extrude'] = self.heater.can_extrude
@@ -202,6 +210,16 @@ class PrinterExtruder:
         return self.trapq
     def stats(self, eventtime):
         return self.heater.stats(eventtime)
+    
+    def register_update_move_time_callback(self, f):
+        self.update_move_time_callbacks.append(f)
+    
+    def register_check_move_callback(self, f):
+        self.check_move_callbacks.append(f)
+    
+    def register_move_callback(self, f):
+        self.move_callbacks.append(f)
+    
     def check_move(self, move):
         axis_r = move.axes_r[3]
         if not self.heater.can_extrude:
@@ -229,6 +247,9 @@ class PrinterExtruder:
                 "Move exceeds maximum extrusion (%.3fmm^2 vs %.3fmm^2)\n"
                 "See the 'max_extrude_cross_section' config option for details"
                 % (area, self.max_extrude_ratio * self.filament_area))
+            
+        for f in self.check_move_callbacks:
+            f(move)
     def calc_junction(self, prev_move, move):
         diff_r = move.axes_r[3] - prev_move.axes_r[3]
         if diff_r:
@@ -249,6 +270,9 @@ class PrinterExtruder:
                           1., can_pressure_advance, 0.,
                           start_v, cruise_v, accel)
         self.last_position = move.end_pos[3]
+        
+        for f in self.move_callbacks:
+            f(print_time, move)
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.

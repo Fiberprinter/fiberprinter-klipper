@@ -2,7 +2,135 @@ import math, logging
 from kinematics.extruder import ExtruderStepper
 import chelper
 
-import math
+import stepper, chelper
+
+SERVO_SIGNAL_PERIOD = 0.020
+PIN_MIN_TIME = 0.100
+
+ANGLE_SPEED = 0.005
+MIN_WIDTH = 0.0005
+MAX_WIDTH = 0.00251
+
+class CutterServo:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
+        self.min_width = 0.0005
+        self.max_width = 0.00251
+        self.max_angle = 180.0
+
+        self.angle_to_width = (self.max_width - self.min_width) / self.max_angle
+        self.width_to_value = 1. / SERVO_SIGNAL_PERIOD
+        self.last_value = self.last_value_time = 0.
+
+        self.initial_angle = config.getfloat('initial_angle', 20.0, minval=0., maxval=360.)
+        self.cutting_angle = config.getfloat('cutting_angle', 20.0, minval=0., maxval=360.)
+        # Setup mcu_servo pin
+        ppins = self.printer.lookup_object('pins')
+        self.mcu_servo = ppins.setup_pin('pwm', config.get('cutting_pin'))
+        self.mcu_servo.setup_max_duration(0.)
+        self.mcu_servo.setup_cycle_time(SERVO_SIGNAL_PERIOD)
+        self.mcu_servo.setup_start_value(self._get_pwm_from_angle(self.initial_angle), 0.)
+        # Register commands
+        gcode = self.printer.lookup_object('gcode')
+
+        gcode.register_command("CUT", self.cmd_SET_SERVO)
+        gcode.register_command("M751", self.cmd_SET_SERVO)
+
+        gcode.register_command("CUT_STATUS", self.get_last_value)
+        
+        
+    def get_last_value(self, gcmd):
+        gcmd.respond_info(f"Current Angle: {self._get_angle_from_pwm(self.last_value)}")
+     
+    def get_status(self, eventtime):
+        return {'value': self.last_value}
+
+    def _set_pwm(self, print_time, value):
+        if value == self.last_value:
+            return
+        print_time = max(print_time, self.last_value_time + PIN_MIN_TIME)
+        self.mcu_servo.set_pwm(print_time, value)
+        self.last_value = value
+        self.last_value_time = print_time
+
+    def _get_pwm_from_angle(self, angle):
+        angle = max(0., min(self.max_angle, angle))
+        width = self.min_width + angle * self.angle_to_width
+        return width * self.width_to_value
+    
+    def _get_angle_from_pwm(self, pwm):
+        width = pwm / self.width_to_value
+        angle = (width - self.min_width) / self.angle_to_width
+        angle = max(0., min(self.max_angle, angle))
+        return angle
+
+    cmd_SET_SERVO_help = "Set servo angle"
+    
+    def cmd_SET_SERVO(self, gcmd):
+        print_time = self.printer.lookup_object('toolhead').get_last_move_time()
+        angle = gcmd.get_float('ANGLE', None)
+
+        if angle is not None:
+            self._set_pwm(print_time, self._get_pwm_from_angle(angle))
+        else:
+            self._set_pwm(print_time, self._get_pwm_from_angle(self.initial_angle + self.cutting_angle))
+            self._set_pwm(print_time + self.cutting_angle * ANGLE_SPEED, self._get_pwm_from_angle(self.initial_angle))
+
+class FiberExtruderStepper:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.name = config.get_name().split()[-1]
+        
+        # Setup stepper
+        self.stepper = stepper.PrinterStepper(config)
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self.sk_extruder = ffi_main.gc(ffi_lib.extruder_stepper_alloc(),
+                                       ffi_lib.extruder_stepper_free)
+        self.stepper.set_stepper_kinematics(self.sk_extruder)
+        self.motion_queue = None
+        # Register commands
+        self.printer.register_event_handler("klippy:connect",
+                                            self._handle_connect)
+        gcode = self.printer.lookup_object('gcode')
+
+        gcode.register_mux_command("SET_FIBER_EXTRUDER_ROTATION_DISTANCE", "EXTRUDER",
+                                   self.name, self.cmd_SET_FIBER_ROTATION_DISTANCE,
+                                   desc=self.cmd_SET_FIBER_ROTATION_DISTANCE_help)
+    def _handle_connect(self):
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.register_step_generator(self.stepper.generate_steps)
+        # self._set_pressure_advance(self.config_pa, self.config_smooth_time)
+    def get_status(self, eventtime):
+        return {'pressure_advance': self.pressure_advance,
+                'smooth_time': self.pressure_advance_smooth_time,
+                'motion_queue': self.motion_queue}
+    def find_past_position(self, print_time):
+        mcu_pos = self.stepper.get_past_mcu_position(print_time)
+        return self.stepper.mcu_to_commanded_position(mcu_pos)
+
+    cmd_SET_FIBER_ROTATION_DISTANCE_help = "Set extruder rotation distance"
+    def cmd_SET_FIBER_ROTATION_DISTANCE(self, gcmd):
+        rotation_dist = gcmd.get_float('DISTANCE', None)
+        if rotation_dist is not None:
+            if not rotation_dist:
+                raise gcmd.error("Rotation distance can not be zero")
+            invert_dir, orig_invert_dir = self.stepper.get_dir_inverted()
+            next_invert_dir = orig_invert_dir
+            if rotation_dist < 0.:
+                next_invert_dir = not orig_invert_dir
+                rotation_dist = -rotation_dist
+            toolhead = self.printer.lookup_object('toolhead')
+            toolhead.flush_step_generation()
+            self.stepper.set_rotation_distance(rotation_dist)
+            self.stepper.set_dir_inverted(next_invert_dir)
+        else:
+            rotation_dist, spr = self.stepper.get_rotation_distance()
+        invert_dir, orig_invert_dir = self.stepper.get_dir_inverted()
+        if invert_dir != orig_invert_dir:
+            rotation_dist = -rotation_dist
+        gcmd.respond_info("Extruder '%s' rotation distance set to %0.6f"
+                          % (self.name, rotation_dist))
 
 # Tracking for hotend heater, extrusion motion queue, and extruder stepper
 class FiberExtruder:
@@ -10,35 +138,7 @@ class FiberExtruder:
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.last_position = 0.
-        self.fiber_last_position = 0.
-        
-        # Setup hotend heater
-        pheaters = self.printer.load_object(config, 'heaters')
-        gcode_id = 'T%d' % (extruder_num,)
-        self.heater = pheaters.setup_heater(config, gcode_id)
-        # Setup kinematic checks
-        self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
-        filament_diameter = config.getfloat(
-            'filament_diameter', minval=self.nozzle_diameter)
-        self.filament_area = math.pi * (filament_diameter * .5)**2
-        def_max_cross_section = 4. * self.nozzle_diameter**2
-        def_max_extrude_ratio = def_max_cross_section / self.filament_area
-        max_cross_section = config.getfloat(
-            'max_extrude_cross_section', def_max_cross_section, above=0.)
-        self.max_extrude_ratio = max_cross_section / self.filament_area
-        logging.info("Extruder max_extrude_ratio=%.6f", self.max_extrude_ratio)
-        toolhead = self.printer.lookup_object('toolhead')
-        max_velocity, max_accel = toolhead.get_max_velocity()
-        self.max_e_velocity = config.getfloat(
-            'max_extrude_only_velocity', max_velocity * def_max_extrude_ratio
-            , above=0.)
-        self.max_e_accel = config.getfloat(
-            'max_extrude_only_accel', max_accel * def_max_extrude_ratio
-            , above=0.)
-        self.max_e_dist = config.getfloat(
-            'max_extrude_only_distance', 50., minval=0.)
-        self.instant_corner_v = config.getfloat(
-            'instantaneous_corner_velocity', 1., minval=0.)
+        self.extruder_num = extruder_num
         
         # Setup extruder trapq (trapezoidal motion queue)
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -54,153 +154,42 @@ class FiberExtruder:
             or config.get('rotation_distance', None) is not None):
             self.extruder_stepper = ExtruderStepper(config)
             self.extruder_stepper.stepper.set_trapq(self.trapq)
+            
+        self.printer.register_event_handler("klippy:connect",
+                                            self._handle_connect)
         
-        # trapq for fiber extruder
-        self.fiber_trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-        
-        if extruder_num == 0:
-            self.fiber_extruder_stepper = self.printer.lookup_object('fiberextruder_stepper')
+    def _handle_connect(self):
+        if self.extruder_num == 0:
+            extruder = self.printer.lookup_object('extruder')
         else:
-            self.fiber_extruder_stepper = self.printer.lookup_object('fiberextruder_stepper%d' % (extruder_num))        
-    
-        self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
+            extruder = self.printer.lookup_object('extruder%d' % (self.extruder_num,))
         
-        # Register commands
-        gcode = self.printer.lookup_object('gcode')
-        if self.name == 'fiberextruder':
-            toolhead.set_extruder(self, 0.)
-            gcode.register_command("M104", self.cmd_M104)
-            gcode.register_command("M109", self.cmd_M109)
-        gcode.register_mux_command("ACTIVATE_EXTRUDER", "EXTRUDER",
-                                   self.name, self.cmd_ACTIVATE_EXTRUDER,
-                                   desc=self.cmd_ACTIVATE_EXTRUDER_help)
+        extruder.register_update_move_time_callback(self.update_move_time)
+        extruder.register_check_move_callback(self.check_move)
+        extruder.register_move_callback(self.move)
+    
     def update_move_time(self, flush_time, clear_history_time):
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
-    def get_status(self, eventtime):
-        sts = self.heater.get_status(eventtime)
-        sts['can_extrude'] = self.heater.can_extrude
-        if self.extruder_stepper is not None:
-            sts.update(self.extruder_stepper.get_status(eventtime))
-        return sts
-    def get_name(self):
-        return self.name
-    def get_heater(self):
-        return self.heater
-    def get_trapq(self):
-        return self.trapq
-    def stats(self, eventtime):
-        return self.heater.stats(eventtime)
+
     def check_move(self, move):
-        axis_r = move.axes_r[3]
-        if not self.heater.can_extrude:
-            raise self.printer.command_error(
-                "Extrude below minimum temp\n"
-                "See the 'min_extrude_temp' config option for details")
-        if (not move.axes_d[0] and not move.axes_d[1]) or axis_r < 0.:
-            # Extrude only move (or retraction move) - limit accel and velocity
-            if abs(move.axes_d[3]) > self.max_e_dist:
-                raise self.printer.command_error(
-                    "Extrude only move too long (%.3fmm vs %.3fmm)\n"
-                    "See the 'max_extrude_only_distance' config"
-                    " option for details" % (move.axes_d[3], self.max_e_dist))
-            inv_extrude_r = 1. / abs(axis_r)
-            move.limit_speed(self.max_e_velocity * inv_extrude_r,
-                             self.max_e_accel * inv_extrude_r)
-        elif axis_r > self.max_extrude_ratio:
-            if move.axes_d[3] <= self.nozzle_diameter * self.max_extrude_ratio:
-                # Permit extrusion if amount extruded is tiny
-                return
-            area = axis_r * self.filament_area
-            logging.debug("Overextrude: %s vs %s (area=%.3f dist=%.3f)",
-                          axis_r, self.max_extrude_ratio, area, move.move_d)
-            raise self.printer.command_error(
-                "Move exceeds maximum extrusion (%.3fmm^2 vs %.3fmm^2)\n"
-                "See the 'max_extrude_cross_section' config option for details"
-                % (area, self.max_extrude_ratio * self.filament_area))
-    def calc_junction(self, prev_move, move):
-        diff_r = move.axes_r[3] - prev_move.axes_r[3]
-        if diff_r:
-            return (self.instant_corner_v / abs(diff_r))**2
-        return move.max_cruise_v2
+        pass
+
     def move(self, print_time, move):
-        # extruder move
-        if move.axes_d[3]:
-            axis_r = move.axes_r[3]
+        # fiber extruder move
+        if move.axes_d[4]:
+            axis_r = move.axes_r[4]
             accel = move.accel * axis_r
             start_v = move.start_v * axis_r
             cruise_v = move.cruise_v * axis_r
-            can_pressure_advance = False
-            if axis_r > 0. and (move.axes_d[0] or move.axes_d[1]):
-                can_pressure_advance = True
-            # Queue movement (x is extruder movement, y is pressure advance flag)
-            self.trapq_append(self.trapq, print_time,
-                            move.accel_t, move.cruise_t, move.decel_t,
-                            move.start_pos[3], 0., 0.,
-                            1., can_pressure_advance, 0.,
-                            start_v, cruise_v, accel)
-            
-            self.last_position = move.end_pos[3]
-            
-        # fiber extruder move
-        if move.axes_d[4]:
-            fiber_axis_r = move.axes_r[4]
-            fiber_accel = move.accel * fiber_axis_r
-            fiber_start_v = move.start_v * fiber_axis_r
-            fiber_cruise_v = move.cruise_v * fiber_axis_r
                 
             # Queue movement (x is extruder movement, y is pressure advance flag)
-            self.fiber_trapq_append(self.fiber_trapq, print_time,
+            self.fiber_trapq_append(self.trapq, print_time,
                                 move.accel_t, move.cruise_t, move.decel_t,
                                 move.start_pos[4], 0., 0.,
                                 1., False, 0.,
-                                fiber_start_v, fiber_cruise_v, fiber_accel)
+                                start_v, cruise_v, accel)
             
             self.fiber_last_position = move.end_pos[4]
-        
-    def find_past_position(self, print_time):
-        if self.extruder_stepper is None:
-            return 0.
-        return self.extruder_stepper.find_past_position(print_time)
-    def cmd_M104(self, gcmd, wait=False):
-        # Set Extruder Temperature
-        temp = gcmd.get_float('S', 0.)
-        index = gcmd.get_int('T', None, minval=0)
-        if index is not None:
-            section = 'fiberprinter'
-            if index:
-                section = 'fiberprinter%d' % (index,)
-            extruder = self.printer.lookup_object(section, None)
-            if extruder is None:
-                if temp <= 0.:
-                    return
-                raise gcmd.error("Extruder not configured")
-        else:
-            extruder = self.printer.lookup_object('toolhead').get_extruder()
-        pheaters = self.printer.lookup_object('heaters')
-        pheaters.set_temperature(extruder.get_heater(), temp, wait)
-    def cmd_M109(self, gcmd):
-        # Set Extruder Temperature and Wait
-        self.cmd_M104(gcmd, wait=True)
-    cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
-    def cmd_ACTIVATE_EXTRUDER(self, gcmd):
-        toolhead = self.printer.lookup_object('toolhead')
-        if toolhead.get_extruder() is self:
-            gcmd.respond_info("Extruder %s already active" % (self.name,))
-            return
-        gcmd.respond_info("Activating fiber extruder %s" % (self.name,))
-        toolhead.flush_step_generation()
-        toolhead.set_extruder(self, self.last_position)
-        self.printer.send_event("extruder:activate_extruder")
 
 def load_config(config):
-    printer = config.get_printer()
-    for i in range(99):
-        section = 'fiberextruder'
-        if i:
-            section = 'fiberextruder%d' % (i,)
-            
-        if not config.has_section(section):
-            break
-        
-        pe = FiberExtruder(config.getsection(section), i)
-        printer.add_object(section, pe)
+    return FiberExtruder(config)
