@@ -142,20 +142,21 @@ class FiberExtruder:
         
         self.cutter = CutterServo(config)
         
-        # Setup extruder trapq (trapezoidal motion queue)
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.trapq_append = ffi_lib.trapq_append
-        self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         
-        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+        # Setup extruder trapq (trapezoidal motion queue)
+        # ffi_main, ffi_lib = chelper.get_ffi()
+        #self.trapq_append = ffi_lib.trapq_append
+        #self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        
+        #self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         
         # Setup extruder stepper
-        self.extruder_stepper = None
-        if (config.get('step_pin', None) is not None
-            or config.get('dir_pin', None) is not None
-            or config.get('rotation_distance', None) is not None):
-            self.extruder_stepper = ExtruderStepper(config)
-            self.extruder_stepper.stepper.set_trapq(self.trapq)
+        #self.extruder_stepper = None
+        #if (config.get('step_pin', None) is not None
+        #    or config.get('dir_pin', None) is not None
+        #    or config.get('rotation_distance', None) is not None):
+        #    self.extruder_stepper = ExtruderStepper(config)
+        #    self.extruder_stepper.stepper.set_trapq(self.trapq)
             
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_connect)
@@ -188,11 +189,11 @@ class FiberExtruder:
             cruise_v = move.cruise_v * axis_r
                 
             # Queue movement (x is extruder movement, y is pressure advance flag)
-            self.fiber_trapq_append(self.trapq, print_time,
-                                move.accel_t, move.cruise_t, move.decel_t,
-                                move.start_pos[4], 0., 0.,
-                                1., False, 0.,
-                                start_v, cruise_v, accel)
+            # self.fiber_trapq_append(self.trapq, print_time,
+            #                    move.accel_t, move.cruise_t, move.decel_t,
+            #                    move.start_pos[4], 0., 0.,
+            #                    1., False, 0.,
+            #                    start_v, cruise_v, accel)
             
             self.fiber_last_position = move.end_pos[4]
 
