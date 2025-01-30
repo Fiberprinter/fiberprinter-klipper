@@ -70,3 +70,6 @@ class CutterServo:
         else:
             self._set_pwm(print_time, self._get_pwm_from_angle(self.initial_angle + self.cutting_angle))
             self._set_pwm(print_time + self.cutting_angle * ANGLE_SPEED, self._get_pwm_from_angle(self.initial_angle))
+            
+def load_config(config):
+    return CutterServo(config)

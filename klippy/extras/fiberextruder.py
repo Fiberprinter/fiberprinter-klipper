@@ -1,93 +1,8 @@
-# Code for handling printer nozzle extruders
-#
-# Copyright (C) 2016-2022  Kevin O'Connor <kevin@koconnor.net>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
 from kinematics.extruder import ExtruderStepper
-import stepper, chelper
+import chelper
 
 import math
-
-class FiberExtruderStepper:
-    def __init__(self, config):
-        self.printer = config.get_printer()
-        self.name = config.get_name().split()[-1]
-        self.config_pa = config.getfloat('pressure_advance', 0., minval=0.)
-        self.config_smooth_time = config.getfloat(
-                'pressure_advance_smooth_time', 0.040, above=0., maxval=.200)
-        # Setup stepper
-        self.stepper = stepper.PrinterStepper(config)
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.sk_extruder = ffi_main.gc(ffi_lib.extruder_stepper_alloc(),
-                                       ffi_lib.extruder_stepper_free)
-        self.stepper.set_stepper_kinematics(self.sk_extruder)
-        self.motion_queue = None
-        # Register commands
-        self.printer.register_event_handler("klippy:connect",
-                                            self._handle_connect)
-        gcode = self.printer.lookup_object('gcode')
-
-        gcode.register_mux_command("SET_FIBER_EXTRUDER_ROTATION_DISTANCE", "EXTRUDER",
-                                   self.name, self.cmd_SET_D_ROTATION_DISTANCE,
-                                   desc=self.cmd_SET_D_ROTATION_DISTANCE_help)
-        gcode.register_mux_command("SYNC_EXTRUDER_MOTION", "EXTRUDER",
-                                   self.name, self.cmd_SYNC_EXTRUDER_MOTION,
-                                   desc=self.cmd_SYNC_EXTRUDER_MOTION_help)
-    def _handle_connect(self):
-        toolhead = self.printer.lookup_object('toolhead')
-        toolhead.register_step_generator(self.stepper.generate_steps)
-        self._set_pressure_advance(self.config_pa, self.config_smooth_time)
-    def get_status(self, eventtime):
-        return {'pressure_advance': self.pressure_advance,
-                'smooth_time': self.pressure_advance_smooth_time,
-                'motion_queue': self.motion_queue}
-    def find_past_position(self, print_time):
-        mcu_pos = self.stepper.get_past_mcu_position(print_time)
-        return self.stepper.mcu_to_commanded_position(mcu_pos)
-    
-    def sync_to_extruder(self, extruder_name):
-        toolhead = self.printer.lookup_object('toolhead')
-        toolhead.flush_step_generation()
-        if not extruder_name:
-            self.stepper.set_trapq(None)
-            self.motion_queue = None
-            return
-        extruder = self.printer.lookup_object(extruder_name, None)
-        if extruder is None or not isinstance(extruder, FiberExtruder):
-            raise self.printer.command_error("'%s' is not a valid extruder."
-                                             % (extruder_name,))
-        self.stepper.set_position([extruder.last_position, 0., 0.])
-        self.stepper.set_trapq(extruder.get_trapq())
-        self.motion_queue = extruder_name
-    cmd_SET_D_ROTATION_DISTANCE_help = "Set extruder rotation distance"
-    def cmd_SET_D_ROTATION_DISTANCE(self, gcmd):
-        rotation_dist = gcmd.get_float('DISTANCE', None)
-        if rotation_dist is not None:
-            if not rotation_dist:
-                raise gcmd.error("Rotation distance can not be zero")
-            invert_dir, orig_invert_dir = self.stepper.get_dir_inverted()
-            next_invert_dir = orig_invert_dir
-            if rotation_dist < 0.:
-                next_invert_dir = not orig_invert_dir
-                rotation_dist = -rotation_dist
-            toolhead = self.printer.lookup_object('toolhead')
-            toolhead.flush_step_generation()
-            self.stepper.set_rotation_distance(rotation_dist)
-            self.stepper.set_dir_inverted(next_invert_dir)
-        else:
-            rotation_dist, spr = self.stepper.get_rotation_distance()
-        invert_dir, orig_invert_dir = self.stepper.get_dir_inverted()
-        if invert_dir != orig_invert_dir:
-            rotation_dist = -rotation_dist
-        gcmd.respond_info("Extruder '%s' rotation distance set to %0.6f"
-                          % (self.name, rotation_dist))
-    cmd_SYNC_EXTRUDER_MOTION_help = "Set extruder stepper motion queue"
-    def cmd_SYNC_EXTRUDER_MOTION(self, gcmd):
-        ename = gcmd.get('MOTION_QUEUE')
-        self.sync_to_extruder(ename)
-        gcmd.respond_info("Extruder '%s' now syncing with '%s'"
-                          % (self.name, ename))
 
 # Tracking for hotend heater, extrusion motion queue, and extruder stepper
 class FiberExtruder:
@@ -143,15 +58,8 @@ class FiberExtruder:
         # trapq for fiber extruder
         self.fiber_trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         
-        fiber_extruder_section = config.getsection('fiberextruder%d' % (extruder_num))
-        
-        # Setup fiber extruder stepper
-        self.fiber_extruder_stepper = None
-        if (fiber_extruder_section.get('step_pin', None) is not None # step_pin for fiber extruder
-            or fiber_extruder_section.get('dir_pin', None) is not None
-            or fiber_extruder_section.get('rotation_distance', None) is not None):
-            self.fiber_extruder_stepper = FiberExtruderStepper(fiber_extruder_section)
-            self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
+        self.fiber_extruder_stepper = self.printer.lookup_object('fiberextruder_stepper%d' % (extruder_num))
+        self.fiber_extruder_stepper.stepper.set_trapq(self.fiber_trapq)
         
         # Register commands
         gcode = self.printer.lookup_object('gcode')
