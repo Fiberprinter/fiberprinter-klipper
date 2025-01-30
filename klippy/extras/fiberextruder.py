@@ -175,7 +175,8 @@ class FiberExtruder:
         gcode.respond_info(f"Fiber Extruder {self.extruder_num} loaded")
     
     def update_move_time(self, flush_time, clear_history_time):
-        self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
+        # self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
+        pass
 
     def check_move(self, move):
         pass
