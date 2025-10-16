@@ -1,3 +1,17 @@
+<div align="center">
+<h1 align="center">
+<img src="main_icon.png" width=200.0>
+<br>Fiberfirmware
+</h1>
+<h3>Embedded control for seamless fiber fusion</h3>
+
+<p align="center">
+<img src="https://img.shields.io/badge/Firmware-Klipper-00BFAE.svg?style&logo=python&logoColor=white" alt="Klipper" />
+</p>
+</div>
+
+
+
 Welcome to the Klipper project!
 
 [![Klipper](docs/img/klipper-logo-small.png)](https://www.klipper3d.org/)
